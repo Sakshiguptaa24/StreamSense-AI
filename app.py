@@ -6,9 +6,12 @@ Enterprise-grade SaaS analytics and machine learning platform.
 import os
 import sys
 import time
+import shutil
+import re
 import sqlite3
 import warnings
 import pandas as pd
+
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
@@ -438,39 +441,72 @@ elif st.session_state.current_page == "Data Upload & Wrangling":
 
     with tab_upload:
         col_u1, col_u2 = st.columns(2)
+        raw_dir = os.path.join(PROJECT_ROOT, "data", "raw")
+
         with col_u1:
             section_header("Upload Netflix Catalogue", "Upload new netflix_titles.csv to ingest into raw store")
             nf_file = st.file_uploader("Upload Netflix Titles CSV", type=["csv"], key="uploader_nf")
             if nf_file:
-                dest = os.path.join(PROJECT_ROOT, "data", "raw", nf_file.name)
-                with open(dest, "wb") as f:
-                    f.write(nf_file.getbuffer())
-                st.success(f"Successfully uploaded: {nf_file.name} ({nf_file.size / 1024:.1f} KB)")
-                tmp = pd.read_csv(dest, dtype=str)
-                render_dataframe(tmp, max_rows=6, title=f"Uploaded Preview: {nf_file.name}")
+                try:
+                    os.makedirs(raw_dir, exist_ok=True)
+                    safe_name = data_cleaning.sanitize_filename(nf_file.name)
+                    dest = os.path.join(raw_dir, "netflix_titles.csv")
+                    custom_dest = os.path.join(raw_dir, safe_name) if safe_name != "netflix_titles.csv" else None
+                    
+                    nf_file.seek(0)
+                    with open(dest, "wb") as f:
+                        while chunk := nf_file.read(1024 * 1024):
+                            f.write(chunk)
+                    if custom_dest and custom_dest != dest:
+                        shutil.copy2(dest, custom_dest)
+
+                    st.success(f"Successfully uploaded: {safe_name} ({nf_file.size / 1024:.1f} KB)")
+                    tmp = pd.read_csv(dest, nrows=10, dtype=str)
+                    render_dataframe(tmp, max_rows=6, title=f"Uploaded Preview: {safe_name}")
+                except Exception as e:
+                    st.error(f"Error processing Netflix upload: {e}")
 
         with col_u2:
             section_header("Upload IMDb Reviews", "Upload new IMDB Dataset.csv to ingest into raw store")
             im_file = st.file_uploader("Upload IMDb Dataset CSV", type=["csv"], key="uploader_im")
             if im_file:
-                dest = os.path.join(PROJECT_ROOT, "data", "raw", im_file.name)
-                with open(dest, "wb") as f:
-                    f.write(im_file.getbuffer())
-                st.success(f"Successfully uploaded: {im_file.name} ({im_file.size / (1024 * 1024):.2f} MB)")
-                tmp2 = pd.read_csv(dest, dtype=str)
-                render_dataframe(tmp2, max_rows=6, title=f"Uploaded Preview: {im_file.name}")
+                try:
+                    os.makedirs(raw_dir, exist_ok=True)
+                    safe_name = data_cleaning.sanitize_filename(im_file.name)
+                    dest = os.path.join(raw_dir, "IMDB Dataset.csv")
+                    custom_dest = os.path.join(raw_dir, safe_name) if safe_name != "IMDB Dataset.csv" else None
+
+                    im_file.seek(0)
+                    with open(dest, "wb") as f:
+                        while chunk := im_file.read(1024 * 1024):
+                            f.write(chunk)
+                    if custom_dest and custom_dest != dest:
+                        shutil.copy2(dest, custom_dest)
+
+                    st.success(f"Successfully uploaded: {safe_name} ({im_file.size / (1024 * 1024):.2f} MB)")
+                    tmp2 = pd.read_csv(dest, nrows=10, dtype=str)
+                    render_dataframe(tmp2, max_rows=6, title=f"Uploaded Preview: {safe_name}")
+                except Exception as e:
+                    st.error(f"Error processing IMDb upload: {e}")
 
         section_header("Raw Ingested Dataset Inspection", "Live previews from current data/raw storage repository")
         raw_nf_path = os.path.join(PROJECT_ROOT, "data", "raw", "netflix_titles.csv")
         raw_im_path = os.path.join(PROJECT_ROOT, "data", "raw", "IMDB Dataset.csv")
 
         if os.path.exists(raw_nf_path):
-            df_raw_nf = pd.read_csv(raw_nf_path, dtype=str)
-            render_dataframe(df_raw_nf, max_rows=8, title="Raw Netflix Titles (netflix_titles.csv)")
+            try:
+                df_raw_nf = pd.read_csv(raw_nf_path, nrows=10, dtype=str)
+                render_dataframe(df_raw_nf, max_rows=8, title="Raw Netflix Titles (netflix_titles.csv)")
+            except Exception as e:
+                st.warning(f"Could not load Netflix preview: {e}")
 
         if os.path.exists(raw_im_path):
-            df_raw_im = pd.read_csv(raw_im_path, dtype=str)
-            render_dataframe(df_raw_im, max_rows=5, title="Raw IMDb Reviews (IMDB Dataset.csv)")
+            try:
+                df_raw_im = pd.read_csv(raw_im_path, nrows=10, dtype=str)
+                render_dataframe(df_raw_im, max_rows=5, title="Raw IMDb Reviews (IMDB Dataset.csv)")
+            except Exception as e:
+                st.warning(f"Could not load IMDb preview: {e}")
+
 
     with tab_quality:
         nf = get_netflix_data()
@@ -522,12 +558,16 @@ elif st.session_state.current_page == "Data Upload & Wrangling":
 
         if st.button("Execute Pipeline Across Datasets", key="btn_run_cleaning"):
             with st.spinner("Executing pipeline routines..."):
-                t_start = time.time()
-                nf_out, im_out = data_cleaning.run_all_cleaning()
-                st.cache_data.clear()
-                t_elapsed = time.time() - t_start
-            st.success(f"Pipeline executed successfully in {t_elapsed:.2f} seconds!")
-            st.info(f"Updated: `{nf_out}` & `{im_out}`")
+                try:
+                    t_start = time.time()
+                    nf_out, im_out = data_cleaning.run_all_cleaning()
+                    st.cache_data.clear()
+                    t_elapsed = time.time() - t_start
+                    st.success(f"Pipeline executed successfully in {t_elapsed:.2f} seconds!")
+                    st.info(f"Updated: `{nf_out}` & `{im_out}`")
+                except Exception as e:
+                    st.error(f"Pipeline execution encountered an error: {e}")
+
 
         # Download Processed Files
         nf = get_netflix_data()

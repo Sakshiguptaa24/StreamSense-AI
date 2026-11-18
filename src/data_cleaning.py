@@ -1,4 +1,5 @@
 import os
+import re
 import pandas as pd
 from typing import Tuple
 
@@ -8,7 +9,25 @@ PROCESSED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "
 def _ensure_processed_dir():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
 
+def _ensure_raw_dir():
+    os.makedirs(RAW_DIR, exist_ok=True)
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize an uploaded filename to prevent directory traversal and injection.
+    Returns a clean, safe basename with .csv extension.
+    """
+    if not filename:
+        return "uploaded_dataset.csv"
+    base = os.path.basename(filename).strip()
+    clean = re.sub(r"[^\w\s\.-]", "", base).strip()
+    if not clean or clean.startswith("."):
+        clean = "uploaded_" + (clean.lstrip(".") or "dataset.csv")
+    if not clean.lower().endswith(".csv"):
+        clean += ".csv"
+    return clean
+
 def load_csv(filename: str) -> pd.DataFrame:
+
     """Load a CSV file from the raw data directory, or fallback to processed directory."""
     path = os.path.join(RAW_DIR, filename)
     if not os.path.exists(path):
