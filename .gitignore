@@ -1,0 +1,19 @@
+# Python Bytecode & Caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.venv/
+venv/
+env/
+.env/
+
+# System Files & Logs
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.tmp
+*.db-journal
