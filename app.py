@@ -8,6 +8,7 @@ import sys
 import time
 import shutil
 import re
+import html
 import sqlite3
 import warnings
 import pandas as pd
@@ -28,7 +29,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 # ── Internal Modules & Safe UI Components ────────────────────────────────────
-from src import data_cleaning, eda, evaluation, prediction, database
+from src import data_cleaning, eda, evaluation, prediction, database, recommendation
 from src.components import (
     render_dataframe,
     safe_dataframe,
@@ -116,6 +117,15 @@ def get_model_evaluation(model_name: str):
     """Cached evaluation of trained models on held-out test partition."""
     return evaluation.evaluate_model(model_name)
 
+@st.cache_resource(show_spinner="Building Content Recommendation Vector Space...")
+def get_recommendation_matrix():
+    """Cached sparse TF-IDF feature matrix over Netflix catalog metadata."""
+    df_nf = get_netflix_data()
+    if df_nf is not None and len(df_nf) > 0:
+        matrix, _ = recommendation.build_tfidf_matrix(df_nf)
+        return matrix
+    return None
+
 # Auto-initialize SQLite history database on startup
 try:
     database._init_db()
@@ -143,6 +153,7 @@ NAV_SECTIONS = {
         ("Data Upload & Wrangling", "📥", "Data Upload & Wrangling Studio"),
         ("Content Intelligence", "🎬", "Content Intelligence"),
         ("Sentiment Analysis", "💬", "Sentiment Analysis"),
+        ("Movie & TV Show Recommendations", "🎯", "Movie & TV Recommendations"),
     ],
     "MACHINE LEARNING": [
         ("Model Training", "⚙️", "Model Training Studio"),
@@ -764,6 +775,170 @@ elif st.session_state.current_page == "Sentiment Analysis":
 
     samples["review"] = samples["review"].str[:220] + "…"
     render_dataframe(samples.reset_index(drop=True), max_rows=6, title=f"Sample Reviews: {filter_choice}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: MOVIE & TV SHOW RECOMMENDATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif st.session_state.current_page == "Movie & TV Show Recommendations":
+    page_header(
+        "Content Discovery Engine",
+        "Movie & TV Show Recommendations",
+        "Content-based filtering using high-dimensional TF-IDF vectorization and cosine similarity over curated Netflix metadata."
+    )
+
+    df_nf = get_netflix_data()
+    if df_nf is None or len(df_nf) == 0:
+        st.warning("⚠️ Netflix Titles dataset is not loaded. Please upload or clean the dataset in the Data Upload & Wrangling Studio.")
+    else:
+        tfidf_matrix = get_recommendation_matrix()
+        if tfidf_matrix is None:
+            st.error("Failed to initialize recommendation vector space. Please ensure Netflix dataset contains valid metadata.")
+        else:
+            # ── Discovery Configuration Card ──
+            st.markdown('<div class="ss-card">', unsafe_allow_html=True)
+            st.markdown("<h4 style='margin-bottom:0.8rem;'>Select Seed Title & Discovery Parameters</h4>", unsafe_allow_html=True)
+            
+            col_search, col_fmt, col_top = st.columns([3, 1.2, 1])
+            with col_search:
+                title_list = sorted(df_nf["title"].dropna().unique().tolist())
+                default_idx = title_list.index("Stranger Things") if "Stranger Things" in title_list else 0
+                selected_title = st.selectbox(
+                    "Select or Search a Title You Enjoyed:",
+                    title_list,
+                    index=default_idx,
+                    help="Search across all 8,807 titles in the Netflix catalog"
+                )
+            with col_fmt:
+                fmt_choice = st.selectbox(
+                    "Format Filter:",
+                    ["All Formats", "Movie", "TV Show"],
+                    index=0,
+                    help="Filter target recommendations by content type"
+                )
+                fmt_filter = "All" if fmt_choice == "All Formats" else fmt_choice
+            with col_top:
+                top_n = st.selectbox(
+                    "Results Count:",
+                    [5, 10],
+                    index=0,
+                    help="Number of recommendations to retrieve"
+                )
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            # ── Selected Title Metadata Profile ──
+            target_match = df_nf[df_nf["title"].astype(str).str.strip().str.lower() == selected_title.strip().lower()]
+            if not target_match.empty:
+                t_row = target_match.iloc[0]
+                t_type = t_row.get("type", "Movie")
+                t_badge_cls = "ss-badge-movie" if t_type == "Movie" else "ss-badge-show"
+                t_icon = "🎬" if t_type == "Movie" else "📡"
+                t_year = int(t_row["release_year"]) if pd.notna(t_row.get("release_year")) else "N/A"
+                t_rating = str(t_row.get("rating", "Not Rated")) if pd.notna(t_row.get("rating")) else "Not Rated"
+                t_duration = str(t_row.get("duration", "")) if pd.notna(t_row.get("duration")) else ""
+                t_genres = str(t_row.get("listed_in", "N/A")) if pd.notna(t_row.get("listed_in")) else "N/A"
+                t_country = str(t_row.get("country", "Global")) if pd.notna(t_row.get("country")) else "Global"
+                t_director = recommendation._clean_str(t_row.get("director", "")) or "Unknown"
+                t_cast = recommendation._clean_str(t_row.get("cast", "")) or "Unknown"
+                t_desc = str(t_row.get("description", "No synopsis available.")) if pd.notna(t_row.get("description")) else "No synopsis available."
+
+                seed_html = (
+                    f'<div style="background: #141424; border: 1px solid rgba(167, 139, 250, 0.22); border-left: 4px solid #A78BFA; border-radius: 12px; padding: 1.2rem 1.5rem; margin-bottom: 1.6rem;">'
+                    f'<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.5rem;">'
+                    f'<div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">'
+                    f'<span class="ss-badge {t_badge_cls}">{t_icon} {t_type}</span>'
+                    f'<span style="font-size: 1.2rem; font-weight: 700; color: #FFFFFF;">{html.escape(selected_title)}</span>'
+                    f'<span style="font-size: 0.88rem; color: #94A3B8;">({html.escape(str(t_year))})</span>'
+                    f'</div>'
+                    f'<div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem;">'
+                    f'<span style="background: rgba(255,255,255,0.06); padding: 3px 8px; border-radius: 4px; color: #E2E8F0; font-weight: 600;">{html.escape(str(t_rating))}</span>'
+                    f'<span style="background: rgba(255,255,255,0.06); padding: 3px 8px; border-radius: 4px; color: #94A3B8;">{html.escape(str(t_duration))}</span>'
+                    f'<span style="color: #64748B;">{html.escape(str(t_country))}</span>'
+                    f'</div>'
+                    f'</div>'
+                    f'<div style="font-size: 0.86rem; color: #CBD5E1; margin-bottom: 0.6rem; line-height: 1.55;">{html.escape(str(t_desc))}</div>'
+                    f'<div style="display: flex; flex-wrap: wrap; gap: 1rem; font-size: 0.78rem; color: #94A3B8;">'
+                    f'<span><strong style="color: #A78BFA;">Genres:</strong> {html.escape(str(t_genres))}</span>'
+                    f'<span><strong style="color: #67E8F9;">Director:</strong> {html.escape(str(t_director))}</span>'
+                    f'<span><strong style="color: #818CF8;">Key Cast:</strong> {html.escape(str(t_cast[:80])) + ("…" if len(str(t_cast)) > 80 else "")}</span>'
+                    f'</div>'
+                    f'</div>'
+                )
+                st.markdown(seed_html, unsafe_allow_html=True)
+
+            # ── Recommendations Retrieval ──
+            recs = recommendation.get_recommendations(
+                df=df_nf,
+                tfidf_matrix=tfidf_matrix,
+                selected_title=selected_title,
+                top_n=top_n,
+                format_filter=fmt_filter
+            )
+
+            if not recs:
+                st.info(f"No recommendations found matching the filter criteria '{fmt_choice}'. Try switching to 'All Formats'.")
+            else:
+                section_header(
+                    f"Top {len(recs)} Recommendations for '{selected_title}'",
+                    f"Ranked by TF-IDF cosine similarity vector distance across genre classification, narrative synopsis, and production metadata."
+                )
+
+                for rank, rec in enumerate(recs, start=1):
+                    rec_type = rec.get("type", "Movie")
+                    rec_badge_cls = "ss-badge-movie" if rec_type == "Movie" else "ss-badge-show"
+                    rec_icon = "🎬" if rec_type == "Movie" else "📡"
+                    rec_title = rec.get("title", "Unknown Title")
+                    rec_year = rec.get("release_year", "N/A")
+                    rec_rating = rec.get("rating", "Not Rated")
+                    rec_dur = rec.get("duration", "")
+                    rec_genres = rec.get("listed_in", "")
+                    rec_country = rec.get("country", "")
+                    rec_director = rec.get("director", "Unknown")
+                    rec_cast = rec.get("cast", "Unknown")
+                    rec_desc = rec.get("description", "No synopsis available.")
+                    rec_pct = rec.get("similarity_pct", "0.0%")
+                    rec_score = rec.get("similarity_score", 0.0)
+                    rec_expl = rec.get("explanation", "")
+
+                    bar_width = min(100, max(5, int(rec_score * 100)))
+
+                    dur_html = f'<span style="background: rgba(255,255,255,0.05); padding: 2px 7px; border-radius: 4px; color: #94A3B8;">{html.escape(str(rec_dur))}</span>' if rec_dur else ''
+                    country_html = f'<span style="color: #64748B; padding: 2px 4px;">📍 {html.escape(str(rec_country))}</span>' if rec_country else ''
+                    dir_html = f'<span style="color: #64748B; padding: 2px 4px;">🎬 Directed by: <strong style="color: #CBD5E1;">{html.escape(str(rec_director))}</strong></span>' if rec_director and rec_director != "Unknown" else ''
+                    cast_html = f' &nbsp;•&nbsp; <strong style="color: #818CF8;">Cast:</strong> {html.escape(rec_cast[:90] + ("…" if len(rec_cast) > 90 else ""))}' if rec_cast and rec_cast != "Unknown" else ''
+
+                    card_html = (
+                        f'<div class="ss-card" style="margin-bottom: 1.1rem; border-left: 3px solid rgba(103, 232, 249, 0.4);">'
+                        f'<div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.6rem;">'
+                        f'<div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">'
+                        f'<span style="background: rgba(167, 139, 250, 0.15); color: #A78BFA; font-weight: 800; border-radius: 6px; padding: 2px 8px; font-size: 0.78rem;">#{rank}</span>'
+                        f'<span class="ss-badge {rec_badge_cls}">{rec_icon} {rec_type}</span>'
+                        f'<span style="font-size: 1.12rem; font-weight: 700; color: #FFFFFF;">{html.escape(rec_title)}</span>'
+                        f'<span style="font-size: 0.85rem; color: #94A3B8;">({html.escape(str(rec_year))})</span>'
+                        f'</div>'
+                        f'<div style="display: flex; align-items: center; gap: 0.6rem;">'
+                        f'<div style="display: flex; flex-direction: column; align-items: flex-end;">'
+                        f'<span style="background: rgba(103, 232, 249, 0.12); color: #67E8F9; border: 1px solid rgba(103, 232, 249, 0.3); font-weight: 700; border-radius: 6px; padding: 2px 9px; font-size: 0.78rem;">'
+                        f'⚡ {html.escape(rec_pct)} Match'
+                        f'</span>'
+                        f'<div style="width: 85px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; margin-top: 4px; overflow: hidden;">'
+                        f'<div style="width: {bar_width}%; height: 100%; background: linear-gradient(90deg, #A78BFA, #67E8F9); border-radius: 2px;"></div>'
+                        f'</div>'
+                        f'</div>'
+                        f'</div>'
+                        f'</div>'
+                        f'<div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem; font-size: 0.75rem;">'
+                        f'<span style="background: rgba(255,255,255,0.05); padding: 2px 7px; border-radius: 4px; color: #E2E8F0;">{html.escape(str(rec_rating))}</span>'
+                        f'{dur_html}'
+                        f'{country_html}'
+                        f'{dir_html}'
+                        f'</div>'
+                        f'<div style="font-size: 0.84rem; color: #94A3B8; line-height: 1.55; margin-bottom: 0.6rem;">{html.escape(str(rec_desc))}</div>'
+                        f'<div style="font-size: 0.75rem; color: #64748B; margin-bottom: 0.7rem;"><strong style="color: #A78BFA;">Genres:</strong> {html.escape(str(rec_genres))}{cast_html}</div>'
+                        f'<div class="ss-data-note" style="margin-top: 0.4rem;"><span class="ss-data-note-icon">💡</span><div><strong>Match Explanation:</strong> {rec_expl}</div></div>'
+                        f'</div>'
+                    )
+                    st.markdown(card_html, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PAGE 5: MODEL TRAINING
